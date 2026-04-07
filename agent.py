@@ -30,17 +30,6 @@ import warnings
 import wave
 import struct
 
-# OLED Display imports (alternative to tkinter)
-oled_available = False
-try:
-    from luma.core.interface.serial import i2c
-    from luma.oled.device import ssd1306
-    from luma.core.render import canvas
-    from PIL import Image, ImageDraw, ImageFont
-    oled_available = True
-except ImportError:
-    pass
-
 # Suppress harmless library warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
 
@@ -79,8 +68,7 @@ DEFAULT_CONFIG = {
     "system_prompt_extras": "",
     "input_device": None,
     "input_sample_rate": None,
-    "prefer_bluetooth": False,
-    "display_type": "tkinter"  # Options: "tkinter", "oled"
+    "prefer_bluetooth": False
 }
 
 # LLM SETTINGS
@@ -259,38 +247,18 @@ error_sounds_dir = "sounds/error_sounds"
 class BotGUI:
     BG_WIDTH, BG_HEIGHT = 800, 480 
     OVERLAY_WIDTH, OVERLAY_HEIGHT = 400, 300 
-    OLED_WIDTH, OLED_HEIGHT = 128, 64
 
     def __init__(self, master):
-        self.display_type = CURRENT_CONFIG.get("display_type", "tkinter")
-        self.use_oled = self.display_type == "oled" and oled_available
-        
-        if self.use_oled:
-            try:
-                self.setup_oled_display()
-            except RuntimeError:
-                print("[DISPLAY] OLED failed, falling back to tkinter")
-                self.use_oled = False
-                if master is None:
-                    # For OLED fallback, create tkinter master
-                    import tkinter as tk
-                    master = tk.Tk()
-                self.master = master
-                self.setup_tkinter_display(master)
-        else:
-            if master is None:
-                # For OLED fallback, create tkinter master
-                import tkinter as tk
-                master = tk.Tk()
-            self.master = master
-            self.setup_tkinter_display(master)
+        if master is None:
+            import tkinter as tk
+            master = tk.Tk()
+        self.master = master
+        self.setup_tkinter_display(master)
         
         # Common initialization
         self.init_common_state()
         self.load_animations()
-        
-        if not self.use_oled:
-            self.update_animation() 
+        self.update_animation() 
         
         threading.Thread(target=self.safe_main_execution, daemon=True).start()
 
@@ -340,19 +308,6 @@ class BotGUI:
                 print(f"[CRITICAL] Failed to load model: {e}")
         else:
             print(f"[CRITICAL] Model not found: {WAKE_WORD_MODEL}")
-
-    def setup_oled_display(self):
-        """Initialize OLED display via I2C"""
-        try:
-            # Initialize I2C interface (SDA, SCK pins)
-            serial = i2c(port=1, address=0x3C)  # Default SSD1306 address
-            self.device = ssd1306(serial)
-            self.font = ImageFont.load_default()
-            self.small_font = ImageFont.load_default()
-            print("[OLED] Display initialized successfully")
-        except Exception as e:
-            print(f"[OLED] Failed to initialize: {e}")
-            raise RuntimeError("OLED initialization failed")
 
     def setup_tkinter_display(self, master):
         """Initialize tkinter display"""
@@ -417,8 +372,7 @@ class BotGUI:
         except: pass
 
         try:
-            if not self.use_oled:
-                self.master.quit()
+            self.master.quit()
         except Exception:
             pass
         
@@ -474,32 +428,19 @@ class BotGUI:
                 files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.png')])
                 for f in files:
                     img = Image.open(os.path.join(folder, f))
-                    if self.use_oled:
-                        # For OLED, resize to OLED dimensions and keep as PIL image
-                        img = img.resize((self.OLED_WIDTH, self.OLED_HEIGHT))
-                        self.animations[state].append(img)
-                    else:
-                        # For tkinter, resize to BG dimensions and convert to PhotoImage
-                        img = img.resize((self.BG_WIDTH, self.BG_HEIGHT))
-                        self.animations[state].append(ImageTk.PhotoImage(img))
+                    # For tkinter, resize to BG dimensions and convert to PhotoImage
+                    img = img.resize((self.BG_WIDTH, self.BG_HEIGHT))
+                    self.animations[state].append(ImageTk.PhotoImage(img))
             if not self.animations[state]:
                 if state in self.animations.get("idle", []):
                      self.animations[state] = self.animations["idle"]
                 else:
                     # Blue screen fallback
-                    if self.use_oled:
-                        blank = Image.new('RGB', (self.OLED_WIDTH, self.OLED_HEIGHT), color='#0000FF')
-                    else:
-                        blank = Image.new('RGB', (self.BG_WIDTH, self.BG_HEIGHT), color='#0000FF')
-                    if not self.use_oled:
-                        blank = ImageTk.PhotoImage(blank)
-                    self.animations[state].append(blank)
+                    blank = Image.new('RGB', (self.BG_WIDTH, self.BG_HEIGHT), color='#0000FF')
+                    self.animations[state].append(ImageTk.PhotoImage(blank))
 
     def update_animation(self):
-        if self.use_oled:
-            self.update_oled_animation()
-        else:
-            self.update_tkinter_animation()
+        self.update_tkinter_animation()
 
     def update_tkinter_animation(self):
         frames = self.animations.get(self.current_state, []) or self.animations.get(BotStates.IDLE, [])
@@ -520,52 +461,8 @@ class BotGUI:
         speed = 50 if self.current_state == BotStates.SPEAKING else 500
         self.master.after(speed, self.update_animation)
 
-    def update_oled_animation(self):
-        """Update animation on OLED display"""
-        frames = self.animations.get(self.current_state, []) or self.animations.get(BotStates.IDLE, [])
-        if not frames:
-            threading.Timer(0.5, self.update_animation).start()
-            return
-
-        if self.current_state == BotStates.SPEAKING:
-            if len(frames) > 1:
-                self.current_frame_index = random.randint(1, len(frames) - 1)
-            else:
-                self.current_frame_index = 0 
-        else:
-            self.current_frame_index = (self.current_frame_index + 1) % len(frames)
-
-        # Convert PIL image to OLED-compatible format
-        pil_image = frames[self.current_frame_index]
-        if hasattr(pil_image, 'convert'):
-            # Convert to monochrome and resize for OLED
-            oled_image = pil_image.convert('1').resize((self.OLED_WIDTH, self.OLED_HEIGHT))
-        else:
-            # If it's already a PIL image
-            oled_image = pil_image.convert('1').resize((self.OLED_WIDTH, self.OLED_HEIGHT))
-
-        # Display on OLED
-        with canvas(self.device) as draw:
-            draw.bitmap((0, 0), oled_image, fill="white")
-            # Display current state text
-            state_text = str(self.current_state).split('.')[-1]  # Get state name
-            draw.text((0, 50), state_text, font=self.small_font, fill="white")
-            # Display response text if available
-            if hasattr(self, 'oled_text') and self.oled_text.strip():
-                # Display last line of text
-                lines = self.oled_text.strip().split('\n')
-                if lines:
-                    last_line = lines[-1][:20]  # Limit length
-                    draw.text((0, 56), last_line, font=self.small_font, fill="white")
-
-        speed = 0.05 if self.current_state == BotStates.SPEAKING else 0.5
-        threading.Timer(speed, self.update_animation).start()
-
     def set_state(self, state, msg="", cam_path=None):
-        if self.use_oled:
-            self.set_oled_state(state, msg, cam_path)
-        else:
-            self.set_tkinter_state(state, msg, cam_path)
+        self.set_tkinter_state(state, msg, cam_path)
 
     def set_tkinter_state(self, state, msg="", cam_path=None):
         def _update():
@@ -585,19 +482,8 @@ class BotGUI:
                 self.overlay_label.place_forget()
         self.master.after(0, _update)
 
-    def set_oled_state(self, state, msg="", cam_path=None):
-        """Set state for OLED display"""
-        if msg: print(f"[STATE] {state.upper()}: {msg}", flush=True)
-        if self.current_state != state:
-            self.current_state = state
-            self.current_frame_index = 0
-        # OLED will update status in the animation loop
-
     def append_to_text(self, text, newline=True):
-        if self.use_oled:
-            self.append_oled_text(text, newline)
-        else:
-            self.append_tkinter_text(text, newline)
+        self.append_tkinter_text(text, newline)
 
     def append_tkinter_text(self, text, newline=True):
         def _update():
@@ -612,24 +498,8 @@ class BotGUI:
             
         self.master.after(0, _update)
 
-    def append_oled_text(self, text, newline=True):
-        """Append text for OLED display"""
-        if not hasattr(self, 'oled_text'):
-            self.oled_text = ""
-        if newline:
-            self.oled_text += text + "\n"
-        else:
-            self.oled_text += text
-        # Keep only last few lines for OLED
-        lines = self.oled_text.split('\n')
-        if len(lines) > 3:
-            self.oled_text = '\n'.join(lines[-3:])
-
     def _stream_to_text(self, chunk):
-        if self.use_oled:
-            self.stream_oled_text(chunk)
-        else:
-            self.stream_tkinter_text(chunk)
+        self.stream_tkinter_text(chunk)
 
     def stream_tkinter_text(self, chunk):
         def update_text_stream():
@@ -638,16 +508,6 @@ class BotGUI:
             self.response_text.see(tk.END) 
             self.response_text.config(state=tk.DISABLED)
         self.master.after(0, update_text_stream)
-
-    def stream_oled_text(self, chunk):
-        """Stream text for OLED display"""
-        if not hasattr(self, 'oled_text'):
-            self.oled_text = ""
-        self.oled_text += chunk
-        # Keep only last few lines for OLED
-        lines = self.oled_text.split('\n')
-        if len(lines) > 3:
-            self.oled_text = '\n'.join(lines[-3:])
 
     # =========================================================================
     # 3. ACTION ROUTER
@@ -1374,21 +1234,7 @@ if __name__ == "__main__":
     
     print("--- SYSTEM STARTING ---", flush=True)
     
-    # Check if OLED display is configured
-    display_type = CURRENT_CONFIG.get("display_type", "tkinter")
-    use_oled = display_type == "oled" and oled_available
-    
-    if use_oled:
-        print("[DISPLAY] Using OLED display")
-        app = BotGUI(None)  # No tkinter master needed for OLED
-        # Keep the main thread alive for OLED
-        try:
-            while not app.exiting:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            app.safe_exit()
-    else:
-        print("[DISPLAY] Using tkinter display")
-        root = tk.Tk()
-        app = BotGUI(root)
-        root.mainloop()
+    print("[DISPLAY] Using tkinter display (HDMI)")
+    root = tk.Tk()
+    app = BotGUI(root)
+    root.mainloop()

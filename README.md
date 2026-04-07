@@ -24,7 +24,7 @@ This project turns a Raspberry Pi into a fully functional, conversational AI age
 * **Raspberry Pi 5** (Recommended) or Pi 4 (4GB RAM minimum)
 * **Audio Input**: USB Microphone or Bluetooth headset/microphone
 * **Audio Output**: USB Speaker or Bluetooth speaker
-* LCD Screen (DSI or HDMI) or SSD1306 OLED display
+* **Display**: HDMI monitor or LCD screen (DSI/HDMI)
 * Raspberry Pi Camera Module (optional)
 
 ### 🎧 Bluetooth Audio Setup (Optional)
