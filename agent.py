@@ -79,6 +79,7 @@ DEFAULT_CONFIG = {
     "system_prompt_extras": "",
     "input_device": None,
     "input_sample_rate": None,
+    "prefer_bluetooth": False,
     "display_type": "tkinter"  # Options: "tkinter", "oled"
 }
 
@@ -108,7 +109,20 @@ VISION_MODEL = CURRENT_CONFIG["vision_model"]
 
 def resolve_input_device(config):
     requested = config.get("input_device")
+    prefer_bluetooth = config.get("prefer_bluetooth", False)
+
     if requested in (None, "", "default"):
+        if prefer_bluetooth:
+            # Try to find a Bluetooth device
+            try:
+                devices = sd.query_devices()
+                for idx, dev in enumerate(devices):
+                    name = dev.get("name", "").lower()
+                    if dev.get("max_input_channels", 0) > 0 and ("blue" in name or "bt" in name or "bluetooth" in name):
+                        print(f"[AUDIO] Auto-selected Bluetooth device: {dev.get('name')} (Index {idx})", flush=True)
+                        return idx
+            except Exception as e:
+                print(f"[AUDIO] Bluetooth device detection failed: {e}", flush=True)
         return None
 
     try:
@@ -132,6 +146,33 @@ def resolve_input_device(config):
 
     print(f"[AUDIO] Input device name not found: {requested}", flush=True)
     return None
+
+def list_bluetooth_devices():
+    """List all available Bluetooth audio devices"""
+    try:
+        devices = sd.query_devices()
+        bluetooth_devices = []
+        for idx, dev in enumerate(devices):
+            name = dev.get("name", "").lower()
+            if dev.get("max_input_channels", 0) > 0 and ("blue" in name or "bt" in name or "bluetooth" in name):
+                bluetooth_devices.append({
+                    "index": idx,
+                    "name": dev.get("name"),
+                    "channels": dev.get("max_input_channels"),
+                    "samplerate": dev.get("default_samplerate")
+                })
+        return bluetooth_devices
+    except Exception as e:
+        print(f"[AUDIO] Failed to list Bluetooth devices: {e}", flush=True)
+        return []
+
+def check_device_availability(device_index):
+    """Check if a device is still available"""
+    try:
+        sd.query_devices(device_index)
+        return True
+    except Exception:
+        return False
 
 INPUT_DEVICE_NAME = resolve_input_device(CURRENT_CONFIG)
 if INPUT_DEVICE_NAME is not None:
@@ -266,7 +307,11 @@ class BotGUI:
         self.session_memory = []
         self.thinking_sound_active = threading.Event()
         
-        self.last_ptt_time = 0 
+        self.last_ptt_time = 0
+        
+        # Audio device management for Bluetooth stability
+        self.last_device_check = time.time()
+        self.device_check_interval = 30  # Check device availability every 30 seconds 
         self.ptt_event = threading.Event()       
         self.recording_active = threading.Event() 
         self.interrupted = threading.Event() 
@@ -782,6 +827,7 @@ class BotGUI:
         return "WAKE"
 
     def _listen_loop(self, stream_args, input_chunk_size, target_chunk_size, use_resampling):
+        global INPUT_DEVICE_NAME  # Declare global at the top
         # Force software backend (no mmap) via environment variable if possible, 
         # but here we can try to hint loop settings.
         # However, the most effective fix for ALSA mmap issues is often just asking for 'blocksize=0' 
@@ -789,13 +835,32 @@ class BotGUI:
         
         # Let's try to be less aggressive with reads.
         
-         with sd.InputStream(**stream_args) as stream:
+        with sd.InputStream(**stream_args) as stream:
                 print(f"[AUDIO] Listening with rate {stream_args['samplerate']} and block {stream_args['blocksize']}", flush=True)
                 
                 # Pre-allocate buffer for speed
                 # If blocksize is 0, we read what is available.
                 
                 while True:
+                    # Check device availability periodically (every 100 iterations for Bluetooth stability)
+                    if hasattr(self, '_device_check_counter'):
+                        self._device_check_counter += 1
+                    else:
+                        self._device_check_counter = 0
+                    
+                    if self._device_check_counter % 100 == 0:
+                        if INPUT_DEVICE_NAME is not None and not check_device_availability(INPUT_DEVICE_NAME):
+                            print("[AUDIO] Input device disconnected during listening, attempting to reconnect...", flush=True)
+                            INPUT_DEVICE_NAME = resolve_input_device(CURRENT_CONFIG)
+                            if INPUT_DEVICE_NAME is None:
+                                print("[AUDIO ERROR] Could not reconnect to input device, stopping listening", flush=True)
+                                break
+                            # Update stream args with new device
+                            stream_args["device"] = INPUT_DEVICE_NAME
+                            # Restart the stream with new device
+                            stream.close()
+                            raise RuntimeError("Device reconnected - restarting stream")
+
                     if self.ptt_event.is_set():
                         self.ptt_event.clear()
                         raise StopIteration("PTT")
@@ -858,8 +923,17 @@ class BotGUI:
 
 
     def record_voice_adaptive(self, filename="input.wav"):
+        global INPUT_DEVICE_NAME  # Declare global at the top
         print("Recording (Adaptive)...", flush=True)
         time.sleep(0.5) 
+        
+        # Check if device is still available (important for Bluetooth)
+        if INPUT_DEVICE_NAME is not None and not check_device_availability(INPUT_DEVICE_NAME):
+            print("[AUDIO] Input device no longer available, attempting to reconnect...", flush=True)
+            if INPUT_DEVICE_NAME is None:
+                print("[AUDIO ERROR] Could not reconnect to input device", flush=True)
+                return None
+
         samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
 
         silence_threshold = 0.006
@@ -902,8 +976,17 @@ class BotGUI:
         return self.save_audio_buffer(buffer, filename, samplerate)
 
     def record_voice_ptt(self, filename="input.wav"):
+        global INPUT_DEVICE_NAME  # Declare global at the top
         print("Recording (PTT)...", flush=True)
         time.sleep(0.5)
+        
+        # Check if device is still available (important for Bluetooth)
+        if INPUT_DEVICE_NAME is not None and not check_device_availability(INPUT_DEVICE_NAME):
+            print("[AUDIO] Input device no longer available, attempting to reconnect...", flush=True)
+            if INPUT_DEVICE_NAME is None:
+                print("[AUDIO ERROR] Could not reconnect to input device", flush=True)
+                return None
+
         samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
 
         buffer = []
@@ -1240,7 +1323,55 @@ class BotGUI:
         with open(MEMORY_FILE, "w") as f: 
             json.dump([full[0]] + conv, f, indent=4)
 
+    def list_audio_devices(self):
+        """List all available audio input devices, highlighting Bluetooth ones"""
+        try:
+            devices = sd.query_devices()
+            print("\n=== AVAILABLE AUDIO INPUT DEVICES ===")
+            bluetooth_devices = []
+            
+            for idx, dev in enumerate(devices):
+                if dev.get("max_input_channels", 0) > 0:
+                    name = dev.get("name", "")
+                    is_bluetooth = any(keyword in name.lower() for keyword in ["blue", "bt", "bluetooth"])
+                    marker = " [BLUETOOTH]" if is_bluetooth else ""
+                    
+                    print(f"  {idx}: {name}{marker}")
+                    print(f"      Channels: {dev.get('max_input_channels')}, Sample Rate: {dev.get('default_samplerate')}")
+                    
+                    if is_bluetooth:
+                        bluetooth_devices.append(idx)
+            
+            if bluetooth_devices:
+                print(f"\nBluetooth devices found: {bluetooth_devices}")
+                print("To use Bluetooth audio, set 'prefer_bluetooth': true in config.json")
+                print("Or specify the device index directly: 'input_device': <index>")
+            else:
+                print("\nNo Bluetooth devices detected.")
+                print("Make sure your Bluetooth device is paired and connected.")
+            
+            print("========================================\n")
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to list audio devices: {e}")
+
 if __name__ == "__main__":
+    import sys
+    
+    # Check for command line arguments
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ["--list-devices", "-l"]:
+            # Create a temporary instance just to list devices
+            temp_app = BotGUI.__new__(BotGUI)  # Create instance without calling __init__
+            temp_app.list_audio_devices()
+            sys.exit(0)
+        elif sys.argv[1] in ["--help", "-h"]:
+            print("Usage: python agent.py [options]")
+            print("Options:")
+            print("  --list-devices, -l    List all available audio input devices")
+            print("  --help, -h           Show this help message")
+            sys.exit(0)
+    
     print("--- SYSTEM STARTING ---", flush=True)
     
     # Check if OLED display is configured

@@ -22,11 +22,58 @@ This project turns a Raspberry Pi into a fully functional, conversational AI age
 ## 🛠️ Hardware Requirements
 
 * **Raspberry Pi 5** (Recommended) or Pi 4 (4GB RAM minimum)
-* USB Microphone & Speaker
-* LCD Screen (DSI or HDMI)
-* Raspberry Pi Camera Module
+* **Audio Input**: USB Microphone or Bluetooth headset/microphone
+* **Audio Output**: USB Speaker or Bluetooth speaker
+* LCD Screen (DSI or HDMI) or SSD1306 OLED display
+* Raspberry Pi Camera Module (optional)
 
----
+### 🎧 Bluetooth Audio Setup (Optional)
+
+For Bluetooth audio support:
+
+1. **Install Bluetooth packages:**
+   ```bash
+   sudo apt install bluetooth bluez pulseaudio pulseaudio-module-bluetooth
+   ```
+
+2. **Enable Bluetooth services:**
+   ```bash
+   sudo systemctl enable bluetooth
+   sudo systemctl start bluetooth
+   ```
+
+3. **Pair your Bluetooth device:**
+   ```bash
+   bluetoothctl
+   power on
+   agent on
+   scan on
+   # Find your device MAC address, then:
+   pair <MAC_ADDRESS>
+   trust <MAC_ADDRESS>
+   connect <MAC_ADDRESS>
+   exit
+   ```
+
+4. **Configure PulseAudio for Bluetooth:**
+   ```bash
+   pactl load-module module-bluetooth-discover
+   ```
+
+5. **List available audio devices:**
+   ```bash
+   python agent.py --list-devices
+   ```
+
+6. **Configure Bluetooth in `config.json`:**
+   ```json
+   {
+     "prefer_bluetooth": true,
+     "input_device": null
+   }
+   ```
+
+**Note:** Bluetooth devices may have higher latency than USB devices. For best wake word detection performance, USB microphones are recommended.
 
 ## 📂 Project Structure
 
